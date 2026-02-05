@@ -1,0 +1,180 @@
+1. The "Magic" UI: What did you just see?
+
+You asked: "Why did it open an app?"
+
+It didn't actually open a separate "app." You were looking at Swagger UI.
+
+    What it is: FastAPI automatically looks at your code, sees that you defined a function def predict(file: UploadFile), and creates a website for you to test it.
+
+    The "Server Response": This is standard HTTP Protocol language.
+
+        200 OK: "Success! I did what you asked."
+
+        422 Validation Error: "You sent me bad data" (like sending text 'string' instead of a file, which happened to you earlier).
+
+        500 Internal Server Error: "I crashed" (like the type mismatch error you saw).
+
+2. The Code Explained (Line-by-Line)
+
+Here is the "English translation" of the code you just ran.
+Block A: The Imports
+Python
+
+import numpy as np               # The "Math Wizard" (handles matrices)
+import onnxruntime as ort        # The "Engine" (runs the AI model)
+from fastapi import ...          # The "Server" framework
+from PIL import Image            # The "Photographer" (opens image files)
+import io                        # The "Stream" (handles raw bytes)
+
+Block B: The Setup
+Python
+
+# 1. Initialize the App
+app = FastAPI() 
+
+# 2. Load the Brain (ONNX Model)
+ort_session = ort.InferenceSession("../models/mobilenetv2.onnx")
+
+    Crucial Concept: We load the model OUTSIDE the function.
+
+    Why? Loading a model is "heavy" (takes 1-2 seconds). If we put this line inside the def predict() function, the user would have to wait 2 seconds every single time they uploaded a photo. By putting it here, we load it once when the server starts, and it stays in memory forever.
+
+Block C: The Preprocessing (The Math)
+
+This is where we translate a human image (JPEG) into "Robot Numbers" (Tensors).
+Python
+
+def preprocess_image(image_data):
+    # Open the image from raw bytes
+    image = Image.open(io.BytesIO(image_data)).convert('RGB')
+    
+    # Resize to 224x224
+    # Why? Because MobileNetV2 was trained on 224x224 squares. 
+    # If you give it a 1000x1000 image, it will crash.
+    image = image.resize((224, 224))
+    
+    # Convert pixels to numbers (0 to 255)
+    img_array = np.array(image).astype(np.float32)
+
+The Normalization (Your Question):
+Python
+
+    mean = np.array([0.485, 0.456, 0.406], dtype=np.float32)
+    std = np.array([0.229, 0.224, 0.225], dtype=np.float32)
+    img_array = (img_array / 255.0 - mean) / std
+
+    What is this? This is Standard ImageNet Normalization.
+
+    Why? The AI wasn't trained on raw pixels (0→255). It was trained on "normalized" data where red, green, and blue are centered around zero. If we don't do this subtraction, the AI will think the colors are "too bright" and give wrong answers.
+
+The Dimension Shifting:
+Python
+
+    # Transpose: (Height, Width, Channels) -> (Channels, Height, Width)
+    img_array = img_array.transpose(2, 0, 1)
+
+    Why?
+
+        Python (PIL/NumPy) sees images as: [Height, Width, Red/Green/Blue].
+
+        ONNX/PyTorch expects images as: [Red/Green/Blue, Height, Width].
+
+        We must flip the dimensions to match the "Brain."
+
+Python
+
+    # Add Batch Dimension: (3, 224, 224) -> (1, 3, 224, 224)
+    img_array = np.expand_dims(img_array, axis=0)
+
+    Why? The AI is built to process batches of photos (e.g., 50 at a time). Even though we are only sending 1, we have to fake a "batch of 1" so the math shapes align.
+
+Block D: The Endpoint (The Gateway)
+Python
+
+@app.post("/predict")
+async def predict(file: UploadFile = File(...)):
+
+    @app.post: Tells the server "Listen for POST requests at the URL /predict".
+
+    async: This allows the server to handle other users while waiting for the file to upload.
+
+Python
+
+    # Run the "Brain"
+    outputs = ort_session.run(None, {input_name: input_tensor})
+
+    ort_session.run: This is the moment of truth. The CPU takes the math arrays, pushes them through the neural network, and returns 1000 scores (one for each possible object class).
+
+3. Scientific Verification: "Are you sure about the Math?"
+
+You asked if I am sure about the Mean and Std subtraction.
+
+Yes, I am 100% sure.
+
+    The Model: mobilenetv2-7.onnx
+
+    The Source: This model comes from the ONNX Model Zoo.
+
+    The Documentation: The official ONNX Model Zoo documentation for MobileNet explicitly states the preprocessing requirements:
+
+        Input Size: 224 x 224.
+
+        Scale: Input pixels must be in the range [0, 1] (that's why we did / 255.0).
+
+        Mean: [0.485, 0.456, 0.406] (We subtract this).
+
+        Std: [0.229, 0.224, 0.225] (We divide by this).
+
+Note on "Version 7": The "7" in mobilenetv2-7 does not mean "MobileNet Version 7" (that doesn't exist). It refers to ONNX Opset Version 7, which is the technical file format version used when this file was created around 2018
+
+--------------------------------------------------
+
+Explanation of "Requirements.txt"
+
+Library,Role in Your Project
+fastapi,"The Web Framework. This is the logic layer. It provides the tools to define @app.post(""/predict""), handles the API routing, and automatically generates that Swagger UI documentation you looked at."
+uvicorn,"The Server. FastAPI is just a set of instructions; it cannot run itself. uvicorn is the high-performance ASGI server that actually listens on Port 8000, accepts incoming internet connections, and passes them to your FastAPI application."
+python-multipart,"The Form Handler. When you upload a file (like cat.jpg), browsers send it as multipart/form-data. This is a complex binary format. FastAPI delegates the hard work of parsing that binary stream to this specific library."
+onnxruntime,"The Brain's Engine. This is the Microsoft-built accelerator that reads the .onnx file and executes the math. It is highly optimized for CPU performance, making it faster than standard PyTorch for inference."
+numpy,"The Math Wizard. The ""Brain"" (ONNX) handles Tensors, but the ""Image"" (Pillow) handles Pixels. NumPy is the bridge that converts pixels into the multi-dimensional number arrays (matrices) that the brain can understand."
+Pillow,"The Photographer. The Python Imaging Library (PIL). It is responsible for opening the raw image file, converting it to RGB (fixing grayscale issues), and resizing it to the required 224×224 dimensions."
+
+--------------------------------------------------
+3. The Mystery of __pycache__
+
+You asked: "Why did a __pycache__ folder get created without me doing anything?"
+
+This is standard Python behavior.
+
+    What happened: When you ran uvicorn main:app, Python had to read your main.py file.
+
+    Translation: Computers don't understand English (Python code). They understand "Bytecode" (low-level machine instructions).
+
+    The Cache: Python translated your main.py into Bytecode and saved it inside __pycache__ as a .pyc file (e.g., main.cpython-39.pyc).
+
+    Why? Speed. Next time you run the app, Python checks this folder. If main.py hasn't changed, it skips the translation step and runs the .pyc file instantly.
+
+Verdict: It is harmless. You can delete it, but Python will just recreate it the next time you run the app. It is usually ignored in Git (.gitignore) so it doesn't clutter your repository.
+
+--------------------------------
+
+How to Run:
+
+Install dependencies:
+pip install -r requirements.txt
+
+Run the command:
+uvicorn main:app --reload
+
+If it says Application startup complete, you have successfully built the Python Baseline.
+
+Your Homework for Right Now:
+
+    Run the app.
+
+    Go to http://127.0.0.1:8000/docs in your browser.
+
+    Click on the /predict button -> "Try it out" -> Upload any image from your computer -> Click "Execute".
+
+You should get a 200 OK response.
+

@@ -1,0 +1,160 @@
+. High-Level Architecture
+
+Instead of the previous approach (Linux Container + Python + C++ Libs + Plugins), your new architecture looks like this:
+
+    Host (Spin): A lightweight WebAssembly server that handles HTTP requests.
+
+    Guest (Your WASM): A single binary containing your code AND the AI engine.
+
+    Engine (Tract): The AI logic is compiled inside the WASM file, not installed on the OS.
+
+2. Dockerfile Explained (The "Ultra-Light" Version)
+
+This uses a Multi-Stage Build to keep the final image tiny (226MB vs 1GB+).
+Stage 1: BUILDER (The "Kitchen Sink")
+
+Goal: Install every heavy tool needed to compile the code, then throw them all away.
+Dockerfile
+
+FROM rust:1-slim-bookworm AS builder
+
+    Base: Uses Debian "Slim" with Rust pre-installed.
+
+Dockerfile
+
+RUN apt-get update && apt-get install -y pkg-config libssl-dev curl git ...
+
+    Heavy Tools: We install git (to download crates), curl (to get Spin), and libssl-dev (for secure downloads). We don't care about size here because this layer gets deleted.
+
+Dockerfile
+
+RUN rustup target add wasm32-wasip1
+
+    Target: Tells Rust to compile for WebAssembly System Interface (WASI) instead of Linux. This makes the binary portable.
+
+Dockerfile
+
+# Cache Strategy
+COPY wasm-app/Cargo.toml .
+COPY wasm-app/spin.toml .
+RUN mkdir src && echo "fn main() {}" > src/lib.rs
+RUN spin build || true
+
+    Optimization: Compilation takes time (especially tract). This block creates a "fake" empty project and builds just the dependencies. Docker caches this layer. If you change your code in src/lib.rs, Docker skips re-downloading/re-compiling tract, saving you 5-10 minutes per build.
+
+Stage 2: RUNNER (The "Diet")
+
+Goal: Copy only the finished binary. No compilers, no Git.
+Dockerfile
+
+FROM debian:bookworm-slim
+
+    Base: A fresh, empty Debian image.
+
+Dockerfile
+
+COPY --from=builder /usr/local/bin/spin /usr/local/bin/spin
+
+    The Trick: Instead of running the install.sh script (which needs curl and git), we simply copy the binary from the Builder stage. This allows us to remove curl and git from the final image entirely.
+
+Dockerfile
+
+RUN sed -i 's|target/wasm32-wasip1/release/||g' /app/spin.toml
+
+    The Path Fix:
+
+        Local Dev: Spin looks for target/wasm32.../app.wasm (where Cargo puts it).
+
+        Docker: We moved the file to /app/wasm_app.wasm (root folder).
+
+        This command edits spin.toml on the fly to remove the directory prefix so Spin can find the file in Docker.
+
+3. Configuration Files
+Cargo.toml (The Blueprint)
+Ini, TOML
+
+[lib]
+crate-type = ["cdylib"]
+path = "src/lib.rs"
+
+    cdylib: Tells Rust to build a C-compatible Dynamic Library (which is what WASM modules are), not a standalone executable binary.
+
+    path: Explicitly points to lib.rs to stop the compiler from looking for main.rs.
+
+Ini, TOML
+
+[dependencies]
+spin-sdk = "3.0.1"    # The Web Server framework
+tract-onnx = "0.21.7" # The Pure Rust AI Engine
+
+    tract-onnx vs wasi-nn: This is the key change. We removed wasi-nn (which required external plugins) and replaced it with tract-onnx (which compiles the math directly into your code).
+
+spin.toml (The Deployment Manifest)
+Ini, TOML
+
+[[trigger.http]]
+route = "/..."
+
+    Wildcard Route: Any request sent to the server (e.g., /predict, /foo) is routed to your WASM component.
+
+Ini, TOML
+
+files = ["mobilenetv2.onnx"]
+
+    File Access: WASM is sandboxed by default. It cannot read any files on the disk. This line explicitly grants permission for the app to read the model file.
+
+4. src/lib.rs (The Logic)
+
+This file combines the Web Server and the AI Brain.
+The Server Part
+Rust
+
+#[http_component]
+fn handle_request(req: Request) ...
+
+    Macro: #[http_component] marks this function as the entry point. Spin calls this function whenever an HTTP request arrives.
+
+The Preprocessing Part
+Rust
+
+let resized = img.resize_exact(224, 224, FilterType::CatmullRom);
+
+    Resize: MobileNet requires exactly 224x224 pixels.
+
+    CatmullRom: We switched to this filter (from Triangle) because it preserves more detail when shrinking images, which helps prevent the "Shower Curtain" error.
+
+The AI Part (Tract)
+Rust
+
+let model = tract_onnx::onnx()
+    .model_for_path("mobilenetv2.onnx")?
+    .with_input_fact(0, ...)?
+    .into_optimized()?
+    .into_runnable()?;
+
+    Pure Rust Loading:
+
+        model_for_path: Reads the .onnx file bytes.
+
+        into_optimized: Tract analyzes the graph and simplifies it (e.g., merging math operations) specifically for the CPU architecture it's running on.
+
+        into_runnable: Creates the executable plan.
+
+Rust
+
+let result = model.run(tvec!(image_tensor.into_tensor().into()))?;
+
+    Execution: Runs the math operations (Matrix Multiplications, Convolutions) entirely in Rust memory. No calls to external C++ libraries happen here.
+
+Why this works when everything else failed:
+
+    No Dynamic Linking: You aren't relying on libonnxruntime.so existing in a specific folder.
+
+    No Version Mismatch: The AI engine version is locked in Cargo.toml. It cannot drift.
+
+    Self-Contained: The wasm_app.wasm file is a "complete package." You could copy just that file to a Windows machine with Spin installed, and it would run instantly.
+
+How to Run:
+ docker build -t secure-ml-wasm:slim -f wasm-app/Dockerfile .
+ docker run -p 8082:8082 secure-ml-wasm:slim
+ curl -X POST http://127.0.0.1:8082/predict --data-binary "@cat.jpg"

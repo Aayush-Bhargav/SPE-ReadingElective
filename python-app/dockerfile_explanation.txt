@@ -1,0 +1,157 @@
+The Dockerfile: Line-by-Line Anatomy
+Dockerfile
+
+FROM python:3.9-slim
+
+    The Foundation: Just like you need an Operating System (Windows/macOS) to run apps, Docker needs a "Base Image."
+
+    Why 3.9-slim?
+
+        3.9: We chose a stable version of Python.
+
+        slim: This is the important part. A standard Python image is ~900MB because it includes tools you don't need (like Git, compilers, and GUI libraries). The slim version strips all that out, leaving just the bare minimum Linux (Debian) and Python. This is why your final image is small.
+
+Dockerfile
+
+WORKDIR /app
+
+    The Navigation: This is like typing cd /app inside the container.
+
+    Purpose: From this point on, every command we run happens inside this invisible /app folder. It keeps our files organized so they don't get mixed up with system files.
+
+Dockerfile
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libgl1 \
+    libglib2.0-0 \
+    && rm -rf /var/lib/apt/lists/*
+
+    The System Prep: This was the tricky part that broke earlier.
+
+    Why we need it: Python libraries like Pillow (for images) and OpenCV often rely on C++ code deep inside the OS to handle graphics. libgl1 provides those low-level graphics drivers.
+
+    --no-install-recommends: This tells Linux: "Only install the exact package I asked for. Do not install the 'recommended' extra junk (like documentation or icons)." This saves roughly 50-100MB.
+
+    rm -rf /var/lib/apt/lists/*: This is a pro move. When you run apt-get update, Linux downloads a list of every app available on the internet. We delete that list immediately after installing our tools to save space.
+
+Dockerfile
+
+COPY python-app/requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+    The Caching Strategy (Crucial): Notice we copy only the requirements.txt file first?
+
+    Why not copy everything? Docker uses "Layer Caching."
+
+        Scenario A (Bad): You copy all code, then install dependencies. If you change one line of main.py, Docker thinks "Oh, the file changed! I must redo everything after this," and it re-downloads all libraries. Slow!
+
+        Scenario B (Good - This Way): We copy requirements first. If you change main.py later, Docker sees that requirements.txt hasn't changed. It says "I already installed these!" and skips the slow install step.
+
+    --no-cache-dir: By default, pip keeps a copy of downloaded files in a cache folder. Inside a Docker container, we don't need that cache (we are never going to re-install). Deleting it saves another ~50MB.
+
+Dockerfile
+
+COPY python-app/main.py .
+COPY models/mobilenetv2.onnx /models/mobilenetv2.onnx
+
+    The Assembly: Now we copy the actual "Brain" and "Body."
+
+    Context Mattered: Remember the command docker build ... -f python-app/Dockerfile .? The . at the end told Docker, "I am standing in the root folder." That is why we could reach into models/ to grab the ONNX file.
+
+Dockerfile
+
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
+
+    The Ignition: This is the command that runs automatically when the container starts.
+
+    --host 0.0.0.0: This is vital. By default, uvicorn listens on 127.0.0.1 (localhost). Inside a container, localhost means "only inside this box." By changing it to 0.0.0.0, we tell the container: "Accept connections from the outside world (my laptop)."
+
+The Result: Your "Baseline"
+
+You now have:
+
+    Reproducibility: This exact code will run on AWS, Azure, or a Raspberry Pi.
+
+    Efficiency: We used slim, no-cache-dir, and no-install-recommends to keep the file size small (probably under 300MB).
+
+    Performance: We used onnxruntime, which is faster than installing the full PyTorch library.
+
+-------------------------------------------------------------- 
+
+Step 2: Build the Container
+
+This is the tricky part. Because our model is in models/ and our code is in python-app/, we must run the build command from the ROOT folder (secure-ml-study), not inside the python folder.
+
+    Open your terminal.
+
+    Navigate to the root folder: cd secure-ml-study
+
+        Check: ls should show both models and python-app folders.
+
+    Run this build command:
+
+Bash
+
+docker build -t secure-ml-python:v1 -f python-app/Dockerfile .
+
+    -t secure-ml-python:v1: Tags the image with a name.
+
+    -f python-app/Dockerfile: Tells Docker where the recipe file is.
+
+    . (The Dot): Tells Docker "Use the current folder as the Build Context" (so it can see both folders).
+
+Step 3: Run the Container
+
+Once the build finishes (it might take a minute to download Python), run it:
+Bash
+
+docker run -p 8000:8000 secure-ml-python:v1
+
+    -p 8000:8000: Maps port 8000 on your laptop to port 8000 inside the container.
+
+Step 4: Verify It Works
+
+Go back to your browser (Swagger UI) at http://127.0.0.1:8000/docs. Try uploading the image again.
+
+If it works, congratulations! You have successfully completed Lane 1 of your architecture diagram.
+
+
+----------------------------------------------------
+
+Let me know the size of your Docker image. Run this command to check:
+Bash
+
+docker images secure-ml-python:v1
+
+
+Output:
+IMAGE                 ID             DISK USAGE   CONTENT SIZE   EXTRA
+secure-ml-python:v1   083fd58401eb        565MB             0B    U   
+
+Analyzing the File Size (565MB)
+
+You got 565MB.
+
+    Is this bad? For a production microservice? Yes, it's heavy.
+
+    Is this good for your research? YES. It is perfect.
+
+Remember, the goal of your paper is to prove that Python is "heavy" and Rust/WASM is "light."
+
+    If your Python image was tiny, your comparison wouldn't be dramatic.
+
+    565MB gives you a massive target to beat. When we build the Rust version (likely <100MB) and the WASM version (<30MB), your charts will look incredible.
+
+Where did the 565MB go? Here is the rough breakdown of that "Fat" container:
+
+    Python Base (Slim): ~125 MB
+
+    System Libs (libgl1 etc): ~150 MB (Graphics drivers are huge)
+
+    numpy + pandas dependencies: ~100 MB
+
+    onnxruntime: ~80 MB (It bundles its own C++ execution engine)
+
+    Pillow: ~50 MB
+
+This proves exactly why the industry wants to move away from Python for Edge AI—you are shipping half a gigabyte just to run a 14MB model!

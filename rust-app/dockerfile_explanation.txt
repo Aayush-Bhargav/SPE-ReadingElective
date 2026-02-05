@@ -1,0 +1,125 @@
+This is a massive victory. You have successfully reduced the application size from 565MB (Python) to 134MB (Rust).
+
+That is a 76% reduction in size. Your research paper already has its first major finding: Rust containers are 4x smaller than Python containers for the exact same AI workload.
+
+Here is the detailed "Anatomy of the Solution" for your Dockerfile.
+The Architecture: Multi-Stage Build
+
+This Dockerfile uses a pattern called Multi-Stage Builds.
+
+    Imagine a Car Factory (Stage 1): It’s huge, noisy, full of welding robots, scrap metal, blueprints, and heavy machinery.
+
+    Imagine a Car Showroom (Stage 2): It’s clean, small, and contains only the finished car.
+
+You don't want to ship the entire Factory to the customer; you only want to ship the Car. This Dockerfile builds the factory, builds the car, and then destroys the factory, leaving only the showroom.
+Stage 1: The Factory (The Builder)
+Dockerfile
+
+FROM ubuntu:24.04 as builder
+
+    The Foundation: We switched from rust:slim to ubuntu:24.04.
+
+    Why? Remember the error undefined symbol: __isoc23_strtoull? That happened because the AI library (ort) was compiled on a very new computer. We needed an OS that speaks the same "language" (GLIBC 2.39). Ubuntu 24.04 is that OS.
+
+Dockerfile
+
+RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y \
+    curl build-essential pkg-config libssl-dev ...
+
+    The Heavy Machinery:
+
+        build-essential: Installs g++ (The C++ Compiler). Rust needs this to "talk" to the C++ code inside the ONNX Runtime.
+
+        pkg-config & libssl-dev: Tools for secure internet connections (HTTPS).
+
+        DEBIAN_FRONTEND=noninteractive: This stops Linux from pausing to ask you "What time zone are you in?" during the installation.
+
+Dockerfile
+
+RUN curl --proto '=https' ... | sh -s -- -y
+ENV PATH="/root/.cargo/bin:${PATH}"
+
+    Installing Rust Manually: Since we aren't using the official rust image anymore (we are using Ubuntu), we have to install Rust ourselves using rustup, just like you did on your laptop.
+
+The "Dummy Build" Optimization (The Genius Part)
+
+This section is purely for speed.
+Dockerfile
+
+COPY rust-app/Cargo.toml .
+COPY rust-app/Cargo.lock .
+RUN mkdir src && echo "fn main() {}" > src/main.rs
+RUN cargo build --release
+
+    The Problem: Compiling the 100+ libraries (dependencies) takes 5 minutes. If you change one line of your code, Docker usually throws everything away and starts over.
+
+    The Trick:
+
+        We copy the "Shopping List" (Cargo.toml).
+
+        We create a fake, empty "Hello World" app (echo ... > src/main.rs).
+
+        We compile the dependencies for this fake app.
+
+    The Result: Docker caches this step. Now, when you change your real code later, Docker says "Oh, the dependencies haven't changed, I'll skip the 5-minute download" and jumps straight to compiling your code.
+
+Dockerfile
+
+COPY rust-app/src ./src
+RUN touch src/main.rs
+RUN cargo build --release
+
+    The Real Build: Now we copy your actual code.
+
+    touch src/main.rs: We have to "poke" the file to update its timestamp, otherwise Cargo thinks "I already built the dummy app, nothing to do here!"
+
+    The Artifact: This produces one single file: /usr/src/app/target/release/rust-app. This is the "Car."
+
+Stage 2: The Showroom (The Runner)
+Dockerfile
+
+FROM ubuntu:24.04
+
+    The Clean Slate: We start over with a fresh, empty Ubuntu image.
+
+    Why Ubuntu again? If we used a different OS here (like Debian or Alpine), the "Car" wouldn't run because the system drivers would be different. It must match the Factory OS.
+
+Dockerfile
+
+RUN apt-get update && apt-get install -y libssl3 ca-certificates ...
+
+    Minimal Tools: We install only the bare minimum needed to run the app. No compilers, no Rust, no C++ headers. Just the runtime libraries.
+
+Dockerfile
+
+COPY --from=builder /usr/src/app/target/release/rust-app /app/rust-app
+
+    The Teleportation: This is the magic command. It reaches back into the "Builder" stage (the factory), grabs the binary file, and drops it into this clean image. Everything else in the factory is deleted.
+
+Dockerfile
+
+COPY models/mobilenetv2.onnx /models/mobilenetv2.onnx
+
+    The Brain: We copy the AI model file.
+
+Dockerfile
+
+ENV LD_LIBRARY_PATH="/app:/usr/lib"
+CMD ["./rust-app"]
+
+    The Ignition: We tell Linux where to look for library files and then start the engine.
+
+Next Step: The Final Test
+
+You have built the image, but we must prove it runs.
+
+Run this command:
+Bash
+
+docker run -p 8082:8082 secure-ml-rust:v1
+
+Once you see the "Model Loaded!" message, verify it with curl from a new terminal:
+Bash
+
+curl -X POST http://127.0.0.1:8082/predict -F "image=@cat.jpg"
+

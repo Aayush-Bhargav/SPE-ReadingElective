@@ -1,0 +1,233 @@
+Step 1: Install Rust
+
+If you haven't already, install Rust.
+
+    Command (Mac/Linux):
+    Bash
+
+    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+
+    Verify: Restart your terminal and type cargo --version. You should see something like cargo 1.84.0.
+
+Step 2: Initialize the Project
+
+Go to your root folder (secure-ml-study) and create the Rust project.
+Bash
+
+cd secure-ml-study
+cargo new rust-app
+
+Now you have a rust-app/ folder next to your python-app/.
+
+Step 3: Define Dependencies (Cargo.toml)
+
+Rust uses Cargo.toml instead of requirements.txt. We need to select libraries that match our Python stack 1:1.
+
+Open rust-app/Cargo.toml and add dependencies
+
+Step 4: Run It Locally
+
+Before we Dockerize, let's make sure it compiles. This will take a while the first time (it has to compile ~100 libraries).
+Bash
+
+cargo run --release
+
+Step 5: Test the Rust App
+
+Once it is running, open a new terminal window (keep the Rust one open) and send an image to it using curl.
+
+(Note: Rust doesn't have a "Swagger UI" page like Python did. We must use the terminal.)
+curl -X POST http://127.0.0.1:8082/predict   -F "image=@cat.jpg"
+
+Output:
+{"class_index":281,"confidence":12.460013389587402,"message":"Rust (ORT 2.0) is blazing fast!"}
+
+
+-------------------------------------------------------------------
+
+Phase 1: Setup & Dependencies
+
+    Installation: We installed the Rust toolchain (rustup), which gave us the compiler (rustc) and the package manager (cargo).
+
+    Project Init: We ran cargo new rust-app to create the standard folder structure.
+
+    The Manifest (Cargo.toml): We defined our "Shopping List" of libraries.
+
+        actix-web: The web server (replaces FastAPI). It is asynchronous and non-blocking.
+
+        ort (v2.0.0-rc.11): The engine. We had to pin this specific "Release Candidate" version because the stable version 1.x is outdated, but 2.0 is still in testing.
+
+        image: To decode JPEGs (replaces Pillow).
+
+        ndarray: To handle math matrices (replaces NumPy).
+
+        serde_json: To create the final JSON response.
+
+Phase 2: The Code Explained (main.rs)
+
+Here is the deep dive into the final, working Rust code.
+1. Global State Management
+Rust
+
+struct AppState {
+    session: Mutex<Session>,
+}
+
+    The Concept: In Python, the session variable was just "there." In Rust, we must wrap it in a struct.
+
+    The Mutex (Crucial): ONNX Runtime's session is not thread-safe by default when running inference.
+
+        Problem: If User A and User B hit the API at the exact same nanosecond, they would fight over the session's memory, causing a crash.
+
+        Solution: The Mutex (Mutual Exclusion) forces them to form a single-file line. User A enters, locks the door, runs inference, unlocks the door. Then User B enters.
+
+2. Preprocessing (The Math)
+
+This function mimics the Python preprocess_image logic but does it explicitly.
+Rust
+
+fn preprocess(image_bytes: &[u8]) -> ... {
+    // A. Decode the Image
+    let img = ImageReader::new(Cursor::new(image_bytes))...decode()?;
+
+    // B. Resize to 224x224 (Triangle filter is standard for shrinking)
+    let resized = img.resize_exact(224, 224, FilterType::Triangle);
+
+    // C. Create a blank 4D Array [1, 3, 224, 224] filled with zeros
+    let mut input_tensor = Array4::<f32>::zeros((1, 3, 224, 224));
+
+    // D. The Pixel Loop (Normalization)
+    // We iterate over every single pixel (x, y).
+    for (x, y, pixel) in resized.to_rgb8().enumerate_pixels() {
+        // Normalize: (Pixel / 255 - Mean) / Std
+        let r = (pixel[0] as f32 / 255.0 - 0.485) / 0.229;
+        // ... (same for G and B)
+
+        // Assign to the array
+        // Note the order: [Batch, Channel, Y, X]. This performs the "Transpose" 
+        // step we did in Python automatically by placing data in the right slot.
+        input_tensor[[0, 0, y, x]] = r; 
+        input_tensor[[0, 1, y, x]] = g;
+        input_tensor[[0, 2, y, x]] = b;
+    }
+}
+
+3. The Predict Endpoint
+Rust
+
+#[post("/predict")]
+async fn predict(...) {
+    // A. Receive File (Stream handling)
+    // Rust receives the file in "Chunks" of bytes. We stitch them together into a Vec<u8>.
+
+    // B. Preprocess
+    let input_array = preprocess(&image_bytes)...;
+
+    // C. Convert to Tensor (The workaround)
+    // Because of version conflicts between `ort` and `ndarray`, we couldn't just 
+    // pass the array directly. Instead, we stripped the array down to raw data:
+    // Shape: [1, 3, 224, 224]
+    // Data: input_array.into_raw_vec() (Just a flat list of numbers)
+    let input_tensor = Tensor::from_array((shape, data)).unwrap();
+
+    // D. Run Inference (The Mutex Lock)
+    let mut session = data.session.lock().unwrap(); // LOCK THE DOOR
+    let outputs = session.run(ort::inputs![input_tensor]).unwrap(); // THINK
+    // The lock is automatically released here when 'session' goes out of scope.
+
+    // E. Find the Winner (Argmax)
+    // We loop through the 1000 scores to find the highest number.
+}
+
+4. The Startup Logic
+Rust
+
+#[actix_web::main]
+async fn main() {
+    // A. Load the Model ONCE
+    // We use .commit_from_file(), which is the specific ORT 2.0 command.
+    let session = Session::builder()...commit_from_file("../models/mobilenetv2.onnx");
+
+    // B. Wrap it in State
+    // web::Data acts like a "Smart Pointer" (Arc). It allows multiple threads 
+    // to look at the same AppState object without duplicating it in memory.
+    let state = web::Data::new(AppState { 
+        session: Mutex::new(session) 
+    });
+
+    // C. Start the Server
+    HttpServer::new(...)
+        .bind(("0.0.0.0", 8082)) // We moved to port 8082 to avoid conflicts
+        .run()
+}
+
+-------------------------------
+
+The command " cargo run --release"
+
+This command is the "Go Fast" button for Rust. It tells the compiler to spend extra time optimizing your code so the final program runs at maximum speed.
+
+Here is the breakdown of exactly what happens when you type it:
+1. The Command Breakdown
+
+    cargo: This is the Rust package manager (like pip or npm, but it handles everything).
+
+    run: This instructs Cargo to compile your source code into a binary file and then execute it immediately.
+
+    --release: This is the critical part. By default, Cargo compiles in "Debug Mode." Adding this flag switches it to "Release Mode."
+
+2. Debug Mode vs. Release Mode
+Feature	cargo run (Default)	cargo run --release
+Goal	Development Speed. You want to compile fast so you can test changes quickly.	Execution Speed. You want the app to run as fast as possible for the user.
+Optimizations	Off. The compiler translates your code 1:1.	On (Level 3). The compiler rearranges your code, deletes unused parts, and unrolls loops to make math faster.
+Debug Info	Full. If it crashes, it tells you exactly which line number failed.	Stripped. Debug symbols are removed to save space (mostly).
+Compile Time	Fast. (e.g., 2 seconds)	Slow. (e.g., 20 seconds) because the compiler is thinking hard.
+Runtime Speed	Slow.	10x–100x Faster.
+3. Why it matters for this project
+
+For a web server or an AI engine (like we are building), the difference is massive.
+
+    Debug Mode: Your AI matrix math might take 500ms per image because the CPU is doing safety checks on every single number.
+
+    Release Mode: The compiler proves those checks aren't needed and vectorizes the math (does 8 calculations at once). The inference drops to 15ms.
+
+In summary: You use cargo run while you are writing code and fixing bugs. You use cargo run --release when you want to benchmark how fast it truly is (which is what we are doing now).
+
+---------------------------------------------------
+
+Does it only take more time in the first instance and then fast with release?
+
+Yes, exactly!
+
+It only takes a long time the very first time you run it (or after you change your code).
+
+Here is the difference between the "First Run" and "Second Run":
+1. The First Run (The "Cold" Build)
+
+When you type cargo run --release for the first time:
+
+    What happens: Rust has to download all 100 libraries (actix, ort, tokio, etc.), compile them one by one, and then compile your code with heavy optimizations.
+
+    Time: ~2 to 5 minutes.
+
+    Why: It's building the entire house from scratch.
+
+2. The Second Run (The "Cached" Build)
+
+If you stop the server and type cargo run --release again without changing any code:
+
+    What happens: Rust looks at the files, sees nothing changed, and just launches the executable immediately.
+
+    Time: Instant (~0.1 seconds).
+
+    Why: It just opens the front door of the house it already built.
+
+3. The "Incremental" Build (After editing code)
+
+If you change one line of main.rs and run it again:
+
+    What happens: Rust does not recompile the 100 libraries. It only recompiles your one file (main.rs) and links it back together.
+
+    Time: ~5 to 10 seconds.
+
+    Why: It just repaints one wall; it doesn't rebuild the house.
