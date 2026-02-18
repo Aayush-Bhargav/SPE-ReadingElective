@@ -39,14 +39,11 @@ fn preprocess(image_bytes: &[u8]) -> Result<Array4<f32>, Box<dyn std::error::Err
 }
 
 #[post("/predict")]
-async fn predict(mut payload: Multipart, data: web::Data<AppState>) -> impl Responder {
-    let mut image_bytes = Vec::new();
-    while let Ok(Some(mut field)) = payload.try_next().await {
-        while let Ok(Some(chunk)) = field.try_next().await {
-            image_bytes.extend_from_slice(&chunk);
-        }
-    }
+async fn predict(body: web::Bytes, data: web::Data<AppState>) -> impl Responder {
+    // 1. Convert web::Bytes directly into a Vec or slice
+    let image_bytes = body.to_vec();
 
+    // 2. Preprocess (same as before)
     let input_array = match preprocess(&image_bytes) {
         Ok(t) => t,
         Err(_) => return HttpResponse::BadRequest().body("Invalid image data"),
@@ -57,8 +54,7 @@ async fn predict(mut payload: Multipart, data: web::Data<AppState>) -> impl Resp
         input_array.into_raw_vec()
     )).unwrap();
 
-    // FIX 3: Lock the Mutex to get mutable access to the session
-    // This allows .run() to modify internal state safely.
+    // 3. Inference with Mutex lock
     let mut session = data.session.lock().unwrap();
     let outputs = session.run(ort::inputs![input_tensor]).unwrap();
     
@@ -92,7 +88,7 @@ async fn main() -> std::io::Result<()> {
         .commit_from_file("../models/mobilenetv2.onnx")
         .unwrap();
     
-    println!("Model Loaded! Starting Server at 0.0.0.0:8082");
+    println!("Model Loaded! Starting Server at 0.0.0.0:8000");
 
     // FIX 4: Wrap the session in Mutex::new()
     let state = web::Data::new(AppState { 
@@ -104,7 +100,7 @@ async fn main() -> std::io::Result<()> {
             .app_data(state.clone())
             .service(predict)
     })
-    .bind(("0.0.0.0", 8082))?
+    .bind(("0.0.0.0", 8000))?
     .run()
     .await
 }

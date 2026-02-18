@@ -1,0 +1,11 @@
+NAME         VERSION            TYPE  
+base-files   12.4+deb12u13      deb   
+gcc-12-base  12.2.0-14+deb12u1  deb   
+libc6        2.36-9+deb12u13    deb   
+libgcc-s1    12.2.0-14+deb12u1  deb   
+libgomp1     12.2.0-14+deb12u1  deb   
+libssl3      3.0.18-1~deb12u2   deb   
+libstdc++6   12.2.0-14+deb12u1  deb   
+media-types  10.0.0             deb   
+netbase      6.4                deb   
+tzdata       2025b-0+deb12u2    deb

@@ -91,33 +91,23 @@ RUN spin build || true
 # Real Build
 COPY wasm-app/src ./src
 RUN touch src/lib.rs
-RUN spin build
+RUN RUSTFLAGS="-C target-feature=+simd128" spin build
 
 # ==========================================
-# STAGE 2: RUNNER (Ultra-Light)
+# STAGE 2: RUNNER (Distroless / Hardened)
 # ==========================================
-FROM debian:bookworm-slim
+# Use 'cc' because Spin (written in Rust/Go) needs basic C libraries
+FROM gcr.io/distroless/cc-debian12
 
 WORKDIR /app
 
-# 1. Runtime Dependencies
-# We strictly only need SSL certificates for HTTPS support.
-# NO git, NO curl, NO compilers.
-RUN apt-get update && apt-get install -y \
-    ca-certificates \
-    && rm -rf /var/lib/apt/lists/*
-
-# 2. [THE TRICK] Copy Spin Binary from Builder
-# We don't run the installer script here, so we don't need git.
+# 1. Copy Spin Binary from Builder
 COPY --from=builder /usr/local/bin/spin /usr/local/bin/spin
 
-# 3. Copy Artifacts
-COPY --from=builder /usr/src/app/target/wasm32-wasip1/release/wasm_app.wasm /app/wasm_app.wasm
-COPY models/mobilenetv2.onnx /app/mobilenetv2.onnx
+# 2. Copy Artifacts
+COPY --from=builder /usr/src/app/target/wasm32-wasip1/release/wasm_app.wasm .
+COPY models/mobilenetv2.onnx .
+COPY wasm-app/spin.toml .
 
-# 4. Config
-COPY wasm-app/spin.toml /app/spin.toml
-RUN sed -i 's|target/wasm32-wasip1/release/||g' /app/spin.toml
-
-# 5. Run
-CMD ["spin", "up", "--listen", "0.0.0.0:8082"]
+# 3. Run (Must use Exec Form [brackets] because there is no shell)
+ENTRYPOINT ["/usr/local/bin/spin", "up", "--listen", "0.0.0.0:8000"]

@@ -15,7 +15,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # 4. Copy requirements first (Docker Caching Strategy)
 # We do this BEFORE copying the code. If you change your code but not requirements,
 # Docker skips this slow "pip install" step.
-COPY python-app/requirements.txt .
+COPY requirements.txt .
 
 # 5. Install Python Dependencies
 RUN pip install --no-cache-dir -r requirements.txt
@@ -25,7 +25,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY models/mobilenetv2.onnx /models/mobilenetv2.onnx
 
 # 6. Copy the Application Code
-COPY python-app/main.py .
+COPY main.py .
 
 
 # 8. Expose the Port (Documentation only, but good practice)

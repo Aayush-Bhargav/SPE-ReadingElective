@@ -57,4 +57,5 @@ COPY --from=builder /usr/src/app/target/release/rust-app /app/rust-app
 
 # 4. Run it
 ENV LD_LIBRARY_PATH="/app:/usr/lib"
+EXPOSE 8000
 CMD ["./rust-app"]

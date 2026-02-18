@@ -1,6 +1,6 @@
 import numpy as np
 import onnxruntime as ort
-from fastapi import FastAPI, UploadFile, File
+from fastapi import FastAPI, UploadFile, File, Request
 from PIL import Image
 import io
 
@@ -41,9 +41,9 @@ def preprocess_image(image_data):
     return img_array.astype(np.float32)
 
 @app.post("/predict")
-async def predict(file: UploadFile = File(...)):
+async def predict(file: Request):
     # A. Read the image uploaded by the user
-    image_data = await file.read()
+    image_data = await file.body()
     
     # B. Preprocess it
     input_tensor = preprocess_image(image_data)

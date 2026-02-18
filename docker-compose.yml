@@ -1,0 +1,29 @@
+services:
+  # --- Your AI Lanes ---
+  python-lane:
+    image: secure-python:latest
+    ports: ["8500:8000"]
+  
+  rust-lane:
+    image: secure-rust:latest
+    ports: ["8501:8000"]
+
+  wasm-lane:
+    image: secure-wasm:latest
+    ports: ["8502:8000"]
+
+  # --- Monitoring Stack ---
+  cadvisor:
+    image: gcr.io/cadvisor/cadvisor:latest
+    ports: ["8090:8080"]
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:ro
+      - /sys:/sys:ro
+      - /var/lib/docker/:/var/lib/docker:ro
+
+  prometheus:
+    image: prom/prometheus:latest
+    ports: ["9090:9090"]
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml
